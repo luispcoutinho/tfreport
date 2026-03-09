@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/laredoute/tfreport/terraformstate"
+	"github.com/luispcoutinho/tfreport/terraformstate"
 )
 
 // SEPARATOR is the visual separator used between tree sections.

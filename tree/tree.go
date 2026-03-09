@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/laredoute/tfreport/terraformstate"
+	"github.com/luispcoutinho/tfreport/terraformstate"
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/m1gwings/treedrawer/tree"
 )

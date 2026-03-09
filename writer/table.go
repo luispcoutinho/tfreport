@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/laredoute/tfreport/terraformstate"
+	"github.com/luispcoutinho/tfreport/terraformstate"
 	"github.com/olekukonko/tablewriter"
 )
 

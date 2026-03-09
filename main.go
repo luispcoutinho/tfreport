@@ -16,10 +16,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/laredoute/tfreport/parser"
-	"github.com/laredoute/tfreport/reader"
-	"github.com/laredoute/tfreport/terraformstate"
-	"github.com/laredoute/tfreport/writer"
+	"github.com/luispcoutinho/tfreport/parser"
+	"github.com/luispcoutinho/tfreport/reader"
+	"github.com/luispcoutinho/tfreport/terraformstate"
+	"github.com/luispcoutinho/tfreport/writer"
 )
 
 var version = "development"

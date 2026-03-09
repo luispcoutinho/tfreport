@@ -1,6 +1,6 @@
 package writer
 
-import "github.com/laredoute/tfreport/terraformstate"
+import "github.com/luispcoutinho/tfreport/terraformstate"
 
 // ansiBold is the ANSI escape sequence for bold text.
 const ansiBold = "\033[1m"

@@ -4,7 +4,7 @@ package parser
 import (
 	"strings"
 
-	"github.com/laredoute/tfreport/reader"
+	"github.com/luispcoutinho/tfreport/reader"
 	tfjson "github.com/hashicorp/terraform-json"
 )
 

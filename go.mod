@@ -1,4 +1,4 @@
-module github.com/laredoute/tfreport
+module github.com/luispcoutinho/tfreport
 
 go 1.22
 

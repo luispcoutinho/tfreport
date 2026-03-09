@@ -3,25 +3,25 @@
 **tfreport** reads a Terraform plan JSON and prints a human-readable, attribute-level diff table — designed for GitLab/GitHub CI pipeline logs and plan review.
 
 ```
-+--------+------------------------------------------------------------------------+
-| CHANGE | RESOURCE                                                               |
-+========+========================================================================+
-| update | azurerm_application_gateway.this                                       |
-|        |                                                                        |
-|        |   probe:                                                               |
-|        |   [+] host:                "www-abc.npr.laredoute.fr"                  |
-|        |       interval:            30                                          |
-|        |       name:                "probe-abc-ppr-http"                        |
-|        |       path:                "/alive1"                                   |
-|        |       protocol:            "Http"                                      |
-|        |                                                                        |
-|        |   url_path_map:                                                        |
-|        |   [~] name: "pm-http-web-ppr-laredoute-com"                            |
-|        |           path_rule:                                                   |
-|        |           [+] backend_address_pool_name:  "bp-abc-ppr"                 |
-|        |               backend_http_settings_name: "bs-abc-ppr"                 |
-|        |               name:                       "pr-http-abc-ppr-laredoute-com" |
-+--------+------------------------------------------------------------------------+
++--------+---------------------------------------------------------------------+
+| CHANGE | RESOURCE                                                            |
++========+=====================================================================+
+| update | azurerm_application_gateway.this                                    |
+|        |                                                                     |
+|        |   probe:                                                            |
+|        |   [+] host:                "www-new.example.com"                    |
+|        |       interval:            30                                       |
+|        |       name:                "probe-new-http"                         |
+|        |       path:                "/health"                                |
+|        |       protocol:            "Http"                                   |
+|        |                                                                     |
+|        |   url_path_map:                                                     |
+|        |   [~] name: "pm-http-main"                                          |
+|        |           path_rule:                                                |
+|        |           [+] backend_address_pool_name:  "bp-new"                  |
+|        |               backend_http_settings_name: "bs-new"                  |
+|        |               name:                       "pr-new"                  |
++--------+---------------------------------------------------------------------+
 ```
 
 ## Features
@@ -46,10 +46,10 @@
 ## Installation
 
 ```bash
-go install github.com/laredoute/tfreport@latest
+go install github.com/luispcoutinho/tfreport@latest
 ```
 
-Or download a pre-built binary from the [releases page](https://github.com/laredoute/tfreport/releases).
+Or download a pre-built binary from the [releases page](https://github.com/luispcoutinho/tfreport/releases).
 
 ## Usage
 
@@ -93,7 +93,7 @@ plan:
 ## Building from source
 
 ```bash
-git clone https://github.com/laredoute/tfreport
+git clone https://github.com/luispcoutinho/tfreport
 cd tfreport
 go build -o tfreport .
 ```

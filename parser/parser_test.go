@@ -3,7 +3,7 @@ package parser
 import (
 	"testing"
 
-	"github.com/laredoute/tfreport/reader"
+	"github.com/luispcoutinho/tfreport/reader"
 	"github.com/stretchr/testify/assert"
 )
 

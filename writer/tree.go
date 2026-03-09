@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/laredoute/tfreport/terraformstate"
-	"github.com/laredoute/tfreport/tree"
+	"github.com/luispcoutinho/tfreport/terraformstate"
+	"github.com/luispcoutinho/tfreport/tree"
 )
 
 // TreeWriter writes resource changes in a tree format.
