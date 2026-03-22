@@ -130,7 +130,7 @@ func terminalWidth() int {
 	if ret == 0 && ws.Col > 0 {
 		return int(ws.Col)
 	}
-	return 160
+	return 155
 }
 
 // wrapValue splits a value string into lines of at most maxWidth runes.
