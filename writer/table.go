@@ -130,7 +130,7 @@ func terminalWidth() int {
 	if ret == 0 && ws.Col > 0 {
 		return int(ws.Col)
 	}
-	return 120
+	return 160
 }
 
 // wrapValue splits a value string into lines of at most maxWidth runes.
@@ -265,12 +265,13 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 	// Second pass: wrap long array values element-by-element.
 	// Rules:
 	//   - Only lines whose value starts with "[" are candidates.
-	//   - Plain quoted strings are never broken mid-value.
+	//   - Plain quoted strings are never broken mid-string except at "/" boundaries.
 	//   - Elements are packed onto lines greedily; a new line is started
 	//     only when the next element would exceed col2Budget.
-	//   - When a single element is longer than the budget (e.g. an Azure
-	//     resource ID), it gets its own line — the table grows to fit it,
-	//     but no mid-string break ever occurs.
+	//   - When a single element is a quoted path string longer than the budget,
+	//     it is broken at the last "/" before the budget, with continuation lines
+	//     indented pathContIndentExtra spaces beyond the element-start indent.
+	const pathContIndentExtra = 5
 	for bi := range blocks {
 		newLines := []string{blocks[bi].lines[0]} // address line — never wrapped
 		for _, line := range blocks[bi].lines[1:] {
@@ -290,7 +291,7 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 				newLines = append(newLines, line)
 				continue
 			}
-			value := line[colonIdx+2:]
+			value := strings.TrimLeft(line[colonIdx+2:], " ")
 			// Only process array values.
 			if len(value) == 0 || value[0] != '[' {
 				newLines = append(newLines, line)
@@ -301,14 +302,19 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 				newLines = append(newLines, line)
 				continue
 			}
-			// prefix = everything up to and including ": ".
-			// contIndent aligns to one char after the opening "[".
-			prefix := line[:colonIdx+2]
+			// prefix = everything up to and including the "[" that opens the array.
+			// This includes any alignment spaces between ": " and "[", so that
+			// contIndent aligns correctly under the "[" regardless of key padding.
+			// e.g. "      ip_rules:                   [" (with alignment spaces)
+			rawAfterColon := line[colonIdx+2:]
+			nSpaces := len(rawAfterColon) - len(strings.TrimLeft(rawAfterColon, " "))
+			prefix := line[:colonIdx+2+nSpaces] // up to but not including "["
 			prefixW := utf8.RuneCountInString(prefix)
-			contIndent := strings.Repeat(" ", prefixW+1) // +1 for the "["
+			contIndent := strings.Repeat(" ", prefixW+1)
+			pathContIndent := strings.Repeat(" ", prefixW+1+pathContIndentExtra)
 			// Split the array into individual element strings.
 			elems := splitArrayElements(value)
-			// Pack elements greedily onto lines.
+			// Pack elements greedily onto lines, path-breaking long quoted strings.
 			current := "["
 			firstLine := true
 			for i, elem := range elems {
@@ -324,25 +330,68 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 				} else {
 					fullW = utf8.RuneCountInString(contIndent) + utf8.RuneCountInString(candidate)
 				}
-				if fullW <= col2Budget || current == "[" {
-					// Fits, or we haven't placed any element yet (must place at least one).
-					current = candidate
-				} else {
-					// Flush current line.
-					if firstLine {
-						newLines = append(newLines, prefix+current)
+				if fullW <= col2Budget || current == "[" || current == "" {
+					// Fits (or must place at least one element): check if this single
+					// element itself needs path-breaking.
+					if (current == "[" || current == "") && fullW > col2Budget && isQuotedPathString(elem) {
+						// Element is too long even alone — path-break it.
+						var elemIndentW int
+						if firstLine {
+							elemIndentW = prefixW + 1 // after "["
+						} else {
+							elemIndentW = utf8.RuneCountInString(contIndent)
+						}
+						frags := breakStringAtSlash(elem+sep, col2Budget, elemIndentW, utf8.RuneCountInString(pathContIndent))
+						for fi, frag := range frags {
+							if fi == 0 {
+								if firstLine {
+									newLines = append(newLines, prefix+"["+frag)
+								} else {
+									newLines = append(newLines, contIndent+frag)
+								}
+							} else {
+								newLines = append(newLines, pathContIndent+frag)
+							}
+						}
+						current = "" // signal that we flushed
 						firstLine = false
 					} else {
-						newLines = append(newLines, contIndent+current)
+						current = candidate
 					}
-					current = elem + sep
+				} else {
+					// Doesn't fit — flush current line first (skip if empty).
+					if current != "" {
+						if firstLine {
+							newLines = append(newLines, prefix+current)
+							firstLine = false
+						} else {
+							newLines = append(newLines, contIndent+current)
+						}
+					}
+					// Now place the new element, path-breaking if needed.
+					elemIndentW := utf8.RuneCountInString(contIndent)
+					if isQuotedPathString(elem) && utf8.RuneCountInString(contIndent)+utf8.RuneCountInString(elem)+1 > col2Budget {
+						frags := breakStringAtSlash(elem+sep, col2Budget, elemIndentW, utf8.RuneCountInString(pathContIndent))
+						for fi, frag := range frags {
+							if fi == 0 {
+								newLines = append(newLines, contIndent+frag)
+							} else {
+								newLines = append(newLines, pathContIndent+frag)
+							}
+						}
+						current = ""
+					} else {
+						current = elem + sep
+					}
 				}
 			}
-			// Flush the last line.
-			if firstLine {
-				newLines = append(newLines, prefix+current)
-			} else {
-				newLines = append(newLines, contIndent+current)
+			// Flush the last line (if not already flushed by path-breaking).
+			if current != "" {
+				if firstLine {
+					newLines = append(newLines, prefix+current)
+				} else {
+					newLines = append(newLines, contIndent+current)
+				}
 			}
 		}
 		blocks[bi].lines = newLines
@@ -560,6 +609,59 @@ func splitArrayElements(s string) []string {
 	}
 	elements = append(elements, inner[start:])
 	return elements
+}
+
+// isQuotedPathString returns true when elem is a JSON-quoted string containing
+// at least one "/" — indicating it is a path-like value (e.g. an Azure resource ID)
+// that can be broken at slash boundaries.
+func isQuotedPathString(elem string) bool {
+	return len(elem) >= 2 && elem[0] == '"'  && elem[len(elem)-1] == '"'  && strings.Contains(elem, "/")
+}
+
+// breakStringAtSlash breaks a quoted JSON string (with trailing sep char) into
+// fragments that each fit within budget chars when prefixed by their indent.
+//
+// The first fragment is returned without leading indent (caller adds it).
+// Subsequent fragments are returned without indent (caller adds pathContIndent).
+// Breaks are placed after the last "/" that fits within the budget.
+// If no "/" is found within the budget the fragment is placed as-is (hard limit).
+//
+// Example input:  `"/subscriptions/abc/resourceGroups/rg-foo/providers/...",`
+// Example output: [`"/subscriptions/abc/resourceGroups/`, `rg-foo/providers/`, `...",`]
+func breakStringAtSlash(s string, budget, firstIndentW, contIndentW int) []string {
+	var frags []string
+	remaining := s
+	first := true
+	for len(remaining) > 0 {
+		var avail int
+		if first {
+			avail = budget - firstIndentW
+		} else {
+			avail = budget - contIndentW
+		}
+		if avail < 10 {
+			avail = 10 // minimum to avoid infinite loop
+		}
+		runes := []rune(remaining)
+		if len(runes) <= avail {
+			// Remainder fits — done.
+			frags = append(frags, remaining)
+			break
+		}
+		// Find last '/' within avail runes.
+		segment := string(runes[:avail])
+		slashPos := strings.LastIndex(segment, "/")
+		var breakAt int
+		if slashPos > 0 {
+			breakAt = slashPos + 1 // include the slash on this line
+		} else {
+			breakAt = avail // no slash — hard break
+		}
+		frags = append(frags, string(runes[:breakAt]))
+		remaining = string(runes[breakAt:])
+		first = false
+	}
+	return frags
 }
 
 func NewTableWriter(changes map[string]terraformstate.ResourceChanges, outputChanges map[string][]string, mdEnabled bool, details bool, pv terraformstate.PlannedValuesMap) Writer {
