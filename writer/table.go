@@ -113,6 +113,13 @@ type resourceBlock struct {
 // terminalWidth returns the current terminal column width.
 // It tries ioctl TIOCGWINSZ on stdout, then $COLUMNS, then defaults to 120.
 func terminalWidth() int {
+	// $COLUMNS takes priority — allows CI pipelines to control output width explicitly.
+	if cols := os.Getenv("COLUMNS"); cols != "" {
+		var n int
+		if _, err := fmt.Sscanf(cols, "%d", &n); err == nil && n > 0 {
+			return n
+		}
+	}
 	type winsize struct{ Row, Col, Xpixel, Ypixel uint16 }
 	ws := &winsize{}
 	ret, _, _ := syscall.Syscall(syscall.SYS_IOCTL,
@@ -122,12 +129,6 @@ func terminalWidth() int {
 	)
 	if ret == 0 && ws.Col > 0 {
 		return int(ws.Col)
-	}
-	if cols := os.Getenv("COLUMNS"); cols != "" {
-		var n int
-		if _, err := fmt.Sscanf(cols, "%d", &n); err == nil && n > 0 {
-			return n
-		}
 	}
 	return 120
 }
@@ -261,77 +262,92 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 		col2Budget = 40 // minimum usable width
 	}
 	
-	// Second pass: wrap long attribute values and rebuild blocks.lines.
+	// Second pass: wrap long array values element-by-element.
+	// Rules:
+	//   - Only lines whose value starts with "[" are candidates.
+	//   - Plain quoted strings are never broken mid-value.
+	//   - Elements are packed onto lines greedily; a new line is started
+	//     only when the next element would exceed col2Budget.
+	//   - When a single element is longer than the budget (e.g. an Azure
+	//     resource ID), it gets its own line — the table grows to fit it,
+	//     but no mid-string break ever occurs.
 	for bi := range blocks {
 		newLines := []string{blocks[bi].lines[0]} // address line — never wrapped
 		for _, line := range blocks[bi].lines[1:] {
-			// Pass blank separator lines through unchanged.
+			// Blank separator lines pass through unchanged.
 			if line == "" {
 				newLines = append(newLines, line)
 				continue
 			}
-			// Skip block header lines ("  key:") and block sub-lines ("  [0] ..." / "      ...")
-			// These are already formatted by prettyBlock with their own alignment.
-			trimmed := strings.TrimPrefix(line, "  ")
-			isBlockHeader := strings.HasSuffix(strings.TrimSpace(line), ":") && !strings.Contains(line, ": ")
-			isBlockSubLine := len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == ' ')
-			if isBlockHeader || isBlockSubLine {
+			// Block header lines ("  key:") have no value — pass through.
+			if strings.HasSuffix(strings.TrimSpace(line), ":") && !strings.Contains(line, ": ") {
 				newLines = append(newLines, line)
 				continue
 			}
-			// line format: "  key: value"
-			// split into prefix ("  key: ") and value for wrapping
-			colonIdx := strings.Index(trimmed, ": ")
-			if colonIdx < 0 || utf8.RuneCountInString(line) <= col2Budget {
+			// Find "key: value" split point.
+			colonIdx := strings.Index(line, ": ")
+			if colonIdx < 0 {
 				newLines = append(newLines, line)
 				continue
 			}
-			prefix := "  " + trimmed[:colonIdx+2] // "  key: "
-			value := trimmed[colonIdx+2:]
-			indent := strings.Repeat(" ", utf8.RuneCountInString(prefix))
-			vMaxW := col2Budget - utf8.RuneCountInString(prefix)
-			contMaxW := col2Budget - utf8.RuneCountInString(indent)
-			if vMaxW < 20 {
-				vMaxW = 20
-			}
-			// First segment uses prefix, continuations use indent
-			runes := []rune(value)
-			if len(runes) <= vMaxW {
+			value := line[colonIdx+2:]
+			// Only process array values.
+			if len(value) == 0 || value[0] != '[' {
 				newLines = append(newLines, line)
 				continue
 			}
-			first := true
-			for len(runes) > 0 {
-				var maxW int
-				var pfx string
-				if first {
-					maxW = vMaxW
-					pfx = prefix
-					first = false
+			// Line already fits — no wrapping needed.
+			if utf8.RuneCountInString(line) <= col2Budget {
+				newLines = append(newLines, line)
+				continue
+			}
+			// prefix = everything up to and including ": ".
+			// contIndent aligns to one char after the opening "[".
+			prefix := line[:colonIdx+2]
+			prefixW := utf8.RuneCountInString(prefix)
+			contIndent := strings.Repeat(" ", prefixW+1) // +1 for the "["
+			// Split the array into individual element strings.
+			elems := splitArrayElements(value)
+			// Pack elements greedily onto lines.
+			current := "["
+			firstLine := true
+			for i, elem := range elems {
+				isLast := i == len(elems)-1
+				sep := ","
+				if isLast {
+					sep = "]"
+				}
+				candidate := current + elem + sep
+				var fullW int
+				if firstLine {
+					fullW = prefixW + utf8.RuneCountInString(candidate)
 				} else {
-					maxW = contMaxW
-					pfx = indent
+					fullW = utf8.RuneCountInString(contIndent) + utf8.RuneCountInString(candidate)
 				}
-				if maxW >= len(runes) {
-					newLines = append(newLines, pfx+string(runes))
-					break
-				}
-				// Find break point: scan backward for , } ] { [
-				breakAt := maxW
-				for i := maxW - 1; i > maxW/2; i-- {
-					ch := runes[i]
-					if ch == ',' || ch == '}' || ch == ']' || ch == '{' || ch == '[' {
-						breakAt = i + 1
-						break
+				if fullW <= col2Budget || current == "[" {
+					// Fits, or we haven't placed any element yet (must place at least one).
+					current = candidate
+				} else {
+					// Flush current line.
+					if firstLine {
+						newLines = append(newLines, prefix+current)
+						firstLine = false
+					} else {
+						newLines = append(newLines, contIndent+current)
 					}
+					current = elem + sep
 				}
-				newLines = append(newLines, pfx+string(runes[:breakAt]))
-				runes = runes[breakAt:]
+			}
+			// Flush the last line.
+			if firstLine {
+				newLines = append(newLines, prefix+current)
+			} else {
+				newLines = append(newLines, contIndent+current)
 			}
 		}
 		blocks[bi].lines = newLines
 	}
-	
+
 	// Third pass: measure actual col2W after wrapping.
 	col2W := utf8.RuneCountInString("RESOURCE")
 	for _, b := range blocks {
@@ -497,6 +513,55 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 }
 
 // NewTableWriter returns a new TableWriter.
+// splitArrayElements splits a JSON array string into its top-level element
+// strings, preserving exact encoding. It respects nesting (sub-arrays, objects)
+// and quoted strings, so commas inside strings or nested structures are not
+// treated as element separators.
+//
+// Input:  `["a","b","c"]`  or  `[1,2,["x","y"]]`
+// Output: `["a"`, `"b"`, `"c"]`  (note: brackets are NOT part of elements)
+//         Actually returns: `"a"`, `"b"`, `"c"` (inner content only)
+// The caller is responsible for re-adding `[`, `,`, `]` when reassembling.
+func splitArrayElements(s string) []string {
+	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
+		return []string{s}
+	}
+	inner := s[1 : len(s)-1]
+	var elements []string
+	depth := 0
+	inString := false
+	escaped := false
+	start := 0
+	for i := 0; i < len(inner); i++ {
+		ch := inner[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"'  {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '[' || ch == '{' {
+			depth++
+		} else if ch == ']' || ch == '}' {
+			depth--
+		} else if ch == ',' && depth == 0 {
+			elements = append(elements, inner[start:i])
+			start = i + 1
+		}
+	}
+	elements = append(elements, inner[start:])
+	return elements
+}
+
 func NewTableWriter(changes map[string]terraformstate.ResourceChanges, outputChanges map[string][]string, mdEnabled bool, details bool, pv terraformstate.PlannedValuesMap) Writer {
 	return TableWriter{
 		changes:       changes,
