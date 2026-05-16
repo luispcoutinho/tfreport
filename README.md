@@ -95,7 +95,7 @@ plan:
 ```bash
 git clone https://github.com/luispcoutinho/tfreport
 cd tfreport
-go build -ldflags="-X main.version=0.1.1" -o tfreport .
+go build -ldflags="-X main.version=0.2.0" -o tfreport .
 ```
 
 ## Differences from tf-summarize

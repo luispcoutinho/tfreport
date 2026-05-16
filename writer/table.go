@@ -130,7 +130,7 @@ func terminalWidth() int {
 	if ret == 0 && ws.Col > 0 {
 		return int(ws.Col)
 	}
-	return 155
+	return 160
 }
 
 // wrapValue splits a value string into lines of at most maxWidth runes.
@@ -397,7 +397,66 @@ func (t TableWriter) writeDetails(writer io.Writer) error {
 		blocks[bi].lines = newLines
 	}
 
-	// Third pass: measure actual col2W after wrapping.
+
+	// Third pass: middle-truncate plain long strings that still exceed col2Budget.
+	// Applies to:
+	//   "  key: value"              (create/delete — value is a plain long string)
+	//   "  key: before -> after"    (update — before or after or both are long strings)
+	// Arrays are handled by the previous pass. Block headers/sub-lines are skipped.
+	// Format: first_half (...) last_half — budget split 50/50 around the separator.
+	const truncSep = " (...) "
+	for bi := range blocks {
+		newLines := make([]string, 0, len(blocks[bi].lines))
+		for _, line := range blocks[bi].lines {
+			if utf8.RuneCountInString(line) <= col2Budget {
+				newLines = append(newLines, line)
+				continue
+			}
+			// Skip blank separators, block headers, block sub-lines.
+			if line == "" {
+				newLines = append(newLines, line)
+				continue
+			}
+			if strings.HasSuffix(strings.TrimSpace(line), ":") && !strings.Contains(line, ": ") {
+				newLines = append(newLines, line)
+				continue
+			}
+			// Skip block sub-lines (indented with [...] or extra spaces beyond "  ").
+			trimmed2 := strings.TrimPrefix(line, "  ")
+			if len(trimmed2) > 0 && (trimmed2[0] == ' ' || trimmed2[0] == '[') {
+				newLines = append(newLines, line)
+				continue
+			}
+			// Only truncate plain string values (quoted) — skip arrays, booleans, numbers.
+			colonIdx := strings.Index(line, ": ")
+			if colonIdx < 0 {
+				newLines = append(newLines, line)
+				continue
+			}
+			pfxStr := line[:colonIdx+2]
+			pfxW := utf8.RuneCountInString(pfxStr)
+			// Check for "before -> after" update format.
+			rest := strings.TrimLeft(line[colonIdx+2:], " ")
+			if strings.Contains(rest, " -> ") {
+				// Split on last " -> " occurrence.
+				arrowIdx := strings.LastIndex(rest, " -> ")
+				beforeVal := rest[:arrowIdx]
+				afterVal := rest[arrowIdx+4:]
+				// Truncate before and/or after if they are plain long strings.
+				arrow := " -> "
+				beforeTrunc := truncateMiddle(beforeVal, col2Budget-pfxW-len(arrow)-utf8.RuneCountInString(afterVal), truncSep)
+				afterTrunc := truncateMiddle(afterVal, col2Budget-pfxW-len(arrow)-utf8.RuneCountInString(beforeTrunc), truncSep)
+				newLines = append(newLines, pfxStr+beforeTrunc+arrow+afterTrunc)
+			} else {
+				// Plain value — truncate to fit.
+				trunc := truncateMiddle(rest, col2Budget-pfxW, truncSep)
+				newLines = append(newLines, pfxStr+trunc)
+			}
+		}
+		blocks[bi].lines = newLines
+	}
+
+	// Fourth pass: measure actual col2W after all transformations.
 	col2W := utf8.RuneCountInString("RESOURCE")
 	for _, b := range blocks {
 		for _, line := range b.lines {
@@ -662,6 +721,33 @@ func breakStringAtSlash(s string, budget, firstIndentW, contIndentW int) []strin
 		first = false
 	}
 	return frags
+}
+
+// truncateMiddle shortens s to fit within budget runes using a " (...) " separator.
+// The available space is split 50/50 between the start and end of the string.
+// Only applies to plain quoted strings (starts with '"') or JSON-like values.
+// If s already fits within budget, it is returned unchanged.
+func truncateMiddle(s string, budget int, sep string) string {
+	if budget <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= budget {
+		return s
+	}
+	// Only truncate quoted strings or complex values (not short booleans/numbers).
+	if len(runes) < 10 {
+		return s
+	}
+	sepRunes := []rune(sep)
+	available := budget - len(sepRunes)
+	if available < 4 {
+		// Not enough room to show anything meaningful.
+		return string(runes[:budget])
+	}
+	first := available / 2
+	last := available - first
+	return string(runes[:first]) + sep + string(runes[len(runes)-last:])
 }
 
 func NewTableWriter(changes map[string]terraformstate.ResourceChanges, outputChanges map[string][]string, mdEnabled bool, details bool, pv terraformstate.PlannedValuesMap) Writer {
